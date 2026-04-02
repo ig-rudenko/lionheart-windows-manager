@@ -7,15 +7,17 @@
 
 ---
 
+![schema.drawio.png](extra/schema.drawio.png)
+
 Этот проект собирает в одной папке Windows-лаунчер для связки:
 
 - `lionheart` как SOCKS5-клиент
 - `tun2socks` как TUN -> SOCKS5 мост
 - `wintun.dll` как драйвер TUN для Windows
 
-## Запуск
+## Быстрый старт
 
-Запускать нужно от имени администратора, иначе настройка интерфейса и маршрутов Windows не сработает!
+Запускать лаунчер нужно с правами администратора, иначе настройка интерфейса и маршрутов Windows не сработает.
 
 Быстрая установка и запуск из PowerShell:
 
@@ -23,19 +25,23 @@
 irm https://github.com/ig-rudenko/lionheart-windows-manager/raw/refs/heads/master/install.ps1 | iex
 ```
 
-Что делает эта команда:
+## Что делает установщик
+
+Установщик:
 
 - создаёт папку `%USERPROFILE%\lionheart`
 - скачивает `vpn-lionheart.ps1`
 - скачивает `vpn-lionheart.bat`
+- показывает в терминале путь установки и краткую инструкцию
+- создаёт ярлык `Lionheart VPN` на рабочем столе
 - запускает лаунчер с запросом UAC
 
 При первом запуске сам лаунчер уже докачает остальные зависимости.
 
-Сценарий использования:
+## Как пользоваться
 
-1. Запустить `vpn-lionheart.ps1` или `vpn-lionheart.bat`
-2. Вставить `smart-key` от сервера ([см. документацию](https://github.com/jaykaiperson/lionheart?tab=readme-ov-file#использование))
+1. Запустить `Lionheart VPN` с рабочего стола или файл `vpn-lionheart.bat` из `%USERPROFILE%\lionheart`
+2. Вставить `smart-key` от сервера
 3. Нажать `Connect`
 
 Лаунчер:
@@ -50,8 +56,8 @@ irm https://github.com/ig-rudenko/lionheart-windows-manager/raw/refs/heads/maste
 
 Скрипт создаёт рядом с собой:
 
-- [config.json](/E:/Programs/Lionheart/config.json) — клиентский конфиг `lionheart`
-- [vpn-lionheart-config.json](/E:/Programs/Lionheart/vpn-lionheart-config.json) — сохранённый `smart-key`
+- `config.json` — клиентский конфиг `lionheart`
+- `vpn-lionheart-config.json` — сохранённый `smart-key`
 
 ## Внешние зависимости
 
@@ -67,7 +73,7 @@ irm https://github.com/ig-rudenko/lionheart-windows-manager/raw/refs/heads/maste
 
 - для `tun2socks` скачивается ZIP-архив, из него извлекается `tun2socks-windows-amd64.exe`
 - для `wintun` скачивается сразу готовый `wintun.dll`, без распаковки
-- для `lionheart` лаунчер использует каноническое имя `lionheart-windows-x64.exe`
+- для `lionheart` используется каноническое имя `lionheart-windows-x64.exe`
 - если рядом уже лежит старый файл `lionheart-1.2-windows-x64.exe`, скрипт тоже сможет его использовать
 
 ## Ручное обновление бинарников
@@ -79,8 +85,6 @@ irm https://github.com/ig-rudenko/lionheart-windows-manager/raw/refs/heads/maste
 - `wintun.dll`
 
 Тогда скрипт ничего скачивать не будет.
-
-Это основной сценарий для удобного обновления: просто заменяете бинарник на новый и запускаете лаунчер.
 
 ## Ограничения
 
