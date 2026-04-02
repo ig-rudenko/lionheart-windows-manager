@@ -277,7 +277,7 @@ function Save-LionheartConfig
 function Wait-ForSocksProxy
 {
     param(
-        [string]$Host = "127.0.0.1",
+        [string]$ProxyHost = "127.0.0.1",
         [int]$Port = 1080,
         [int]$TimeoutSeconds = 30
     )
@@ -293,7 +293,7 @@ function Wait-ForSocksProxy
         try
         {
             $client = New-Object System.Net.Sockets.TcpClient
-            $async = $client.BeginConnect($Host, $Port, $null, $null)
+            $async = $client.BeginConnect($ProxyHost, $Port, $null, $null)
             if ( $async.AsyncWaitHandle.WaitOne(500))
             {
                 $client.EndConnect($async)
