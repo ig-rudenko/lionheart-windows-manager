@@ -1,6 +1,7 @@
 *config.json
-*.dll
 *.exe
+*.svg.bkp
 
-/lionheart
 .idea
+/lionheart
+/*.dll
