@@ -1,0 +1,6 @@
+*config.json
+*.dll
+*.exe
+
+/lionheart
+.idea
