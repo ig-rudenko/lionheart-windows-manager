@@ -21,9 +21,76 @@ $global:lionheart = $null
 $global:tun2socks = $null
 $global:turnBypassIP = $null
 $global:isConnected = $false
+$global:pendingLogs = New-Object System.Collections.Generic.List[string]
+$global:processLogState = @{}
 $tunInterface = "wb-tun0"
 $tunIP = "10.254.254.1"
 $proxyPort = "1080"
+
+function Invoke-UiAction
+{
+    param([scriptblock]$Action)
+
+    if ($form -and -not $form.IsDisposed)
+    {
+        if ($form.InvokeRequired)
+        {
+            $form.BeginInvoke($Action) | Out-Null
+        }
+        else
+        {
+            & $Action
+        }
+    }
+    else
+    {
+        & $Action
+    }
+}
+
+function Add-Log
+{
+    param(
+        [string]$Message,
+        [string]$Source = "app"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Message))
+    {
+        return
+    }
+
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $line = "[$timestamp][$Source] $Message"
+
+    if ($logBox -and -not $logBox.IsDisposed)
+    {
+        Invoke-UiAction {
+            $logBox.AppendText($line + [Environment]::NewLine)
+            $logBox.SelectionStart = $logBox.TextLength
+            $logBox.ScrollToCaret()
+        }
+    }
+    else
+    {
+        $global:pendingLogs.Add($line) | Out-Null
+    }
+}
+
+function Flush-PendingLogs
+{
+    if (-not $logBox)
+    {
+        return
+    }
+
+    foreach ($line in $global:pendingLogs)
+    {
+        $logBox.AppendText($line + [Environment]::NewLine)
+    }
+
+    $global:pendingLogs.Clear()
+}
 
 function Interface-Exists
 {
@@ -53,54 +120,35 @@ function Update-UiState
         [string]$Detail = ""
     )
 
-    switch ($State)
-    {
-        "Disconnected" {
-            $global:isConnected = $false
-            $status.Text = "Offline"
-            $status.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#d9485f")
-            $statusDetail.Text = if ($Detail)
-            {
-                $Detail
+    Invoke-UiAction {
+        switch ($State)
+        {
+            "Disconnected" {
+                $global:isConnected = $false
+                $status.Text = "Offline"
+                $status.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#d9485f")
+                $statusDetail.Text = if ($Detail) { $Detail } else { "Ready to start the tunnel" }
+                $btnToggle.Text = "Connect"
+                $btnToggle.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#ff6b57")
+                $btnToggle.Enabled = $true
             }
-            else
-            {
-                "Ready to start the tunnel"
+            "Connecting" {
+                $status.Text = "Connecting"
+                $status.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#f4b942")
+                $statusDetail.Text = if ($Detail) { $Detail } else { "Preparing Lionheart and tun2socks" }
+                $btnToggle.Text = "Connecting..."
+                $btnToggle.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#f4b942")
+                $btnToggle.Enabled = $false
             }
-            $btnToggle.Text = "Connect"
-            $btnToggle.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#ff6b57")
-            $btnToggle.Enabled = $true
-        }
-        "Connecting" {
-            $status.Text = "Connecting"
-            $status.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#f4b942")
-            $statusDetail.Text = if ($Detail)
-            {
-                $Detail
+            "Connected" {
+                $global:isConnected = $true
+                $status.Text = "Connected"
+                $status.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#38b46a")
+                $statusDetail.Text = if ($Detail) { $Detail } else { "Tunnel active via 127.0.0.1:1080" }
+                $btnToggle.Text = "Disconnect"
+                $btnToggle.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#1f8f55")
+                $btnToggle.Enabled = $true
             }
-            else
-            {
-                "Preparing Lionheart and tun2socks"
-            }
-            $btnToggle.Text = "Connecting..."
-            $btnToggle.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#f4b942")
-            $btnToggle.Enabled = $false
-        }
-        "Connected" {
-            $global:isConnected = $true
-            $status.Text = "Connected"
-            $status.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#38b46a")
-            $statusDetail.Text = if ($Detail)
-            {
-                $Detail
-            }
-            else
-            {
-                "Tunnel active via 127.0.0.1:1080"
-            }
-            $btnToggle.Text = "Disconnect"
-            $btnToggle.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#1f8f55")
-            $btnToggle.Enabled = $true
         }
     }
 }
@@ -127,6 +175,7 @@ function Download-File
         [string]$DestinationPath
     )
 
+    Add-Log "Downloading $Url" "download"
     Invoke-WebRequest -Uri $Url -OutFile $DestinationPath
 }
 
@@ -223,7 +272,7 @@ function Ensure-Dependencies
     }
     catch
     {
-        throw "Dependency download failed: $( $_.Exception.Message )"
+        throw "Dependency download failed: $($_.Exception.Message)"
     }
 }
 
@@ -240,21 +289,23 @@ function ConvertFrom-SmartKey
 
     try
     {
-        $decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($smartKey.Replace('-', '+').Replace('_', '/') + ('=' * ((4 - $smartKey.Length % 4) % 4))))
+        $padding = "=" * ((4 - $smartKey.Length % 4) % 4)
+        $normalized = $smartKey.Replace("-", "+").Replace("_", "/") + $padding
+        $decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($normalized))
     }
     catch
     {
         throw "Invalid smart-key"
     }
 
-    $parts = $decoded.Split('|', 2)
+    $parts = $decoded.Split("|", 2)
     if ($parts.Length -ne 2)
     {
         throw "Corrupted smart-key"
     }
 
     $peer = $parts[0]
-    if (-not $peer.Contains(':'))
+    if (-not $peer.Contains(":"))
     {
         $peer = "$peer:8421"
     }
@@ -272,6 +323,171 @@ function Save-LionheartConfig
 
     $config = ConvertFrom-SmartKey -smartKey $smartKey
     $config | ConvertTo-Json | Set-Content $lionheartConfigPath
+}
+
+function Initialize-ProcessLog
+{
+    param([string]$Name)
+
+    $stdoutPath = Join-Path $env:TEMP ("lionheart-gui-" + $Name + "-stdout.log")
+    $stderrPath = Join-Path $env:TEMP ("lionheart-gui-" + $Name + "-stderr.log")
+    Set-Content -Path $stdoutPath -Value $null -Encoding UTF8
+    Set-Content -Path $stderrPath -Value $null -Encoding UTF8
+    $global:processLogState[$Name] = @{
+        StdoutPath = $stdoutPath
+        StdoutPosition = 0L
+        StderrPath = $stderrPath
+        StderrPosition = 0L
+    }
+}
+
+function Read-SharedFileChunk
+{
+    param(
+        [string]$Path,
+        [int64]$Position
+    )
+
+    if (-not (Test-Path $Path))
+    {
+        return @{
+            Text = ""
+            Position = $Position
+        }
+    }
+
+    $fileStream = $null
+    $reader = $null
+
+    try
+    {
+        $fileStream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        if ($Position -gt $fileStream.Length)
+        {
+            $Position = 0L
+        }
+
+        $fileStream.Seek($Position, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $reader = New-Object System.IO.StreamReader($fileStream, [System.Text.Encoding]::UTF8, $true)
+        $text = $reader.ReadToEnd()
+        $newPosition = $fileStream.Position
+
+        return @{
+            Text = $text
+            Position = $newPosition
+        }
+    }
+    finally
+    {
+        if ($reader)
+        {
+            $reader.Dispose()
+        }
+        elseif ($fileStream)
+        {
+            $fileStream.Dispose()
+        }
+    }
+}
+
+function Read-ProcessLogs
+{
+    foreach ($entry in $global:processLogState.GetEnumerator())
+    {
+        $name = $entry.Key
+        $state = $entry.Value
+        foreach ($stream in @(
+            @{ Path = $state.StdoutPath; PositionKey = "StdoutPosition"; Source = $name },
+            @{ Path = $state.StderrPath; PositionKey = "StderrPosition"; Source = "$name`:err" }
+        ))
+        {
+            if (-not (Test-Path $stream.Path))
+            {
+                continue
+            }
+
+            try
+            {
+                $result = Read-SharedFileChunk -Path $stream.Path -Position ([int64]$state[$stream.PositionKey])
+                $chunk = $result.Text
+                $state[$stream.PositionKey] = [int64]$result.Position
+                if (-not [string]::IsNullOrEmpty($chunk))
+                {
+                    $lines = $chunk -split "(`r`n|`n|`r)"
+                    foreach ($line in $lines)
+                    {
+                        if (-not [string]::IsNullOrWhiteSpace($line))
+                        {
+                            Add-Log $line $stream.Source
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+}
+
+function Start-LoggedProcess
+{
+    param(
+        [string]$Name,
+        [string]$FilePath,
+        [string]$Arguments = ""
+    )
+
+    Initialize-ProcessLog -Name $Name
+    $logState = $global:processLogState[$Name]
+    $startProcessParams = @{
+        FilePath = $FilePath
+        WorkingDirectory = $PSScriptRoot
+        PassThru = $true
+        WindowStyle = "Hidden"
+        RedirectStandardOutput = $logState.StdoutPath
+        RedirectStandardError = $logState.StderrPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Arguments))
+    {
+        $startProcessParams.ArgumentList = $Arguments
+    }
+
+    $process = Start-Process @startProcessParams
+
+    Add-Log "Started $Name (PID $($process.Id))" $Name
+    return $process
+}
+
+function Stop-LoggedProcess
+{
+    param(
+        [System.Diagnostics.Process]$Process,
+        [string]$Name
+    )
+
+    if (-not $Process)
+    {
+        return
+    }
+
+    try
+    {
+        if (-not $Process.HasExited)
+        {
+            Add-Log "Stopping $Name" "app"
+            $Process.Kill()
+            $Process.WaitForExit(3000) | Out-Null
+        }
+    }
+    catch
+    {
+        Add-Log "Failed to stop ${Name}: $($_.Exception.Message)" "app"
+    }
+    finally
+    {
+        $Process.Dispose()
+    }
 }
 
 function Wait-ForSocksProxy
@@ -294,7 +510,7 @@ function Wait-ForSocksProxy
         {
             $client = New-Object System.Net.Sockets.TcpClient
             $async = $client.BeginConnect($ProxyHost, $Port, $null, $null)
-            if ( $async.AsyncWaitHandle.WaitOne(500))
+            if ($async.AsyncWaitHandle.WaitOne(500))
             {
                 $client.EndConnect($async)
                 $client.Close()
@@ -312,8 +528,6 @@ function Wait-ForSocksProxy
     return $false
 }
 
-# ---------------- START ----------------
-
 function Start-Tunnel
 {
     param([string]$smartKey)
@@ -324,11 +538,13 @@ function Start-Tunnel
         return
     }
 
-    if ( [string]::IsNullOrWhiteSpace($smartKey))
+    if ([string]::IsNullOrWhiteSpace($smartKey))
     {
         [System.Windows.Forms.MessageBox]::Show("Enter smart-key")
         return
     }
+
+    Add-Log "Starting tunnel" "app"
 
     try
     {
@@ -337,6 +553,7 @@ function Start-Tunnel
     catch
     {
         Update-UiState -State "Disconnected" -Detail "Dependency download failed"
+        Add-Log $_.Exception.Message "app"
         [System.Windows.Forms.MessageBox]::Show($_.Exception.Message)
         return
     }
@@ -345,51 +562,46 @@ function Start-Tunnel
     {
         Save-LionheartConfig -smartKey $smartKey
         Save-AppConfig -smartKey $smartKey
+        Add-Log "Client config saved" "app"
     }
     catch
     {
+        Add-Log $_.Exception.Message "app"
         [System.Windows.Forms.MessageBox]::Show($_.Exception.Message)
         return
     }
 
-    # --- Start lionheart
-
     try
     {
         Update-UiState -State "Connecting" -Detail "Launching Lionheart client"
-        $global:lionheart = Start-Process `
--FilePath (Get-LionheartBinaryPath) `
--WorkingDirectory $PSScriptRoot `
--PassThru `
--NoNewWindow
+        $global:lionheart = Start-LoggedProcess -Name "lionheart" -FilePath (Get-LionheartBinaryPath)
     }
     catch
     {
+        Add-Log "lionheart start error: $($_.Exception.Message)" "app"
         [System.Windows.Forms.MessageBox]::Show("lionheart start error: $_")
         return
     }
 
     if (-not (Wait-ForSocksProxy))
     {
+        Add-Log "lionheart did not open SOCKS5 on 127.0.0.1:1080" "app"
         [System.Windows.Forms.MessageBox]::Show("lionheart did not open SOCKS5 on 127.0.0.1:1080")
         Stop-Tunnel
         return
     }
 
-    # --- Start tun2socks
+    Add-Log "SOCKS5 proxy detected on 127.0.0.1:1080" "app"
 
     try
     {
         Update-UiState -State "Connecting" -Detail "SOCKS5 is ready, starting tun2socks"
-        $global:tun2socks = Start-Process `
--FilePath $tun2socksPath `
--WorkingDirectory $PSScriptRoot `
--ArgumentList "--device tun://$tunInterface --proxy socks5://127.0.0.1:$proxyPort" `
--PassThru `
--NoNewWindow
+        $args = "--device tun://$tunInterface --proxy socks5://127.0.0.1:$proxyPort"
+        $global:tun2socks = Start-LoggedProcess -Name "tun2socks" -FilePath $tun2socksPath -Arguments $args
     }
     catch
     {
+        Add-Log "tun2socks start error: $($_.Exception.Message)" "app"
         [System.Windows.Forms.MessageBox]::Show("tun2socks start error: $_")
         Stop-Tunnel
         return
@@ -399,24 +611,21 @@ function Start-Tunnel
 
     if (-not (Interface-Exists $tunInterface))
     {
+        Add-Log "Interface $tunInterface was not created" "app"
         [System.Windows.Forms.MessageBox]::Show("Interface $tunInterface not created!")
         Stop-Tunnel
         return
     }
 
-    # --- Configure IP
-
     $mask = "255.255.255.255"
-
     $ipCmd = "netsh interface ip set address name=`"$tunInterface`" static $tunIP $mask"
     Invoke-Expression $ipCmd
-
-    # --- Interface index
+    Add-Log "Assigned IP $tunIP to $tunInterface" "app"
 
     $ifIndex = (Get-NetAdapter | Where-Object { $_.Name -eq $tunInterface }).ifIndex
-
     if (-not $ifIndex)
     {
+        Add-Log "Failed to resolve interface index for $tunInterface" "app"
         [System.Windows.Forms.MessageBox]::Show("Interface index error")
         Stop-Tunnel
         return
@@ -426,66 +635,56 @@ function Start-Tunnel
     {
         $turnServer = "wb-stream-turn-1.wb.ru"
         $turnIP = (Resolve-DnsName $turnServer -Type A | Select-Object -First 1).IPAddress
-        $global:turnBypassIP = $turnIP  # сохраняем для удаления потом
-        $gateway = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" |
-                Sort-Object RouteMetric | Select-Object -First 1).NextHop
-        route add $turnIP mask 255.255.255.255 $gateway
+        $global:turnBypassIP = $turnIP
+        $gateway = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Sort-Object RouteMetric | Select-Object -First 1).NextHop
+        route add $turnIP mask 255.255.255.255 $gateway | Out-Null
+        Add-Log "Added bypass route for $turnServer ($turnIP)" "app"
     }
     catch
     {
-        Write-Warning "Не удалось добавить bypass маршрут для $turnServer"
+        Add-Log "Failed to add bypass route for WB TURN" "app"
     }
 
-    # delete old route
-    netsh interface ipv4 delete route 0.0.0.0/0 $ifIndex 2> $null
-
-    # add default route
+    netsh interface ipv4 delete route 0.0.0.0/0 $ifIndex 2> $null | Out-Null
     $routeCmd = "netsh interface ipv4 add route 0.0.0.0/0 $ifIndex $tunIP metric=1"
-    Invoke-Expression $routeCmd
+    Invoke-Expression $routeCmd | Out-Null
+    Add-Log "Default route redirected through $tunInterface" "app"
 
     Update-UiState -State "Connected" -Detail "Tunnel active via 127.0.0.1:1080"
-
 }
-
-# ---------------- STOP ----------------
 
 function Stop-Tunnel
 {
+    Add-Log "Stopping tunnel" "app"
 
     if ($global:turnBypassIP)
     {
         try
         {
-            route delete $global:turnBypassIP
+            route delete $global:turnBypassIP | Out-Null
+            Add-Log "Removed bypass route for $global:turnBypassIP" "app"
         }
         catch
         {
-            Write-Warning "Не удалось удалить маршрут для $global:turnBypassIP"
+            Add-Log "Failed to remove bypass route for $global:turnBypassIP" "app"
         }
         $global:turnBypassIP = $null
     }
 
-    if ($global:tun2socks)
-    {
-        $global:tun2socks.Kill()
-        $global:tun2socks = $null
-    }
+    Stop-LoggedProcess -Process $global:tun2socks -Name "tun2socks"
+    $global:tun2socks = $null
 
-    if ($global:lionheart)
-    {
-        $global:lionheart.Kill()
-        $global:lionheart = $null
-    }
+    Stop-LoggedProcess -Process $global:lionheart -Name "lionheart"
+    $global:lionheart = $null
+
+    $global:processLogState.Clear()
 
     Update-UiState -State "Disconnected" -Detail "Tunnel is stopped"
-
 }
-
-# ---------------- GUI ----------------
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Lionheart VPN"
-$form.Size = New-Object System.Drawing.Size(520, 420)
+$form.Size = New-Object System.Drawing.Size(720, 620)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedSingle"
 $form.MaximizeBox = $false
@@ -508,7 +707,7 @@ $subtitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#8b97a8")
 
 $statusCard = New-Object System.Windows.Forms.Panel
 $statusCard.Location = New-Object System.Drawing.Point(28, 92)
-$statusCard.Size = New-Object System.Drawing.Size(460, 72)
+$statusCard.Size = New-Object System.Drawing.Size(660, 72)
 $statusCard.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#171f2b")
 
 $status = New-Object System.Windows.Forms.Label
@@ -528,8 +727,6 @@ $statusDetail.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#8b97a8")
 $statusCard.Controls.Add($status)
 $statusCard.Controls.Add($statusDetail)
 
-# SMART KEY
-
 $lblSmartKey = New-Object System.Windows.Forms.Label
 $lblSmartKey.Text = "Smart-key"
 $lblSmartKey.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 10)
@@ -539,42 +736,27 @@ $lblSmartKey.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#d9dee7")
 
 $txtSmartKey = New-Object System.Windows.Forms.TextBox
 $txtSmartKey.Location = New-Object System.Drawing.Point(30, 208)
-$txtSmartKey.Size = New-Object System.Drawing.Size(392, 32)
+$txtSmartKey.Size = New-Object System.Drawing.Size(592, 32)
 $txtSmartKey.Multiline = $false
 $txtSmartKey.BorderStyle = "FixedSingle"
 $txtSmartKey.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#0f141b")
 $txtSmartKey.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#f3f5f7")
 $txtSmartKey.Font = New-Object System.Drawing.Font("Segoe UI", 10)
 $txtSmartKey.UseSystemPasswordChar = $true
-$txtSmartKey.Text = if ($config)
-{
-    $config.smart_key
-}
-else
-{
-    ""
-}
+$txtSmartKey.Text = if ($config) { $config.smart_key } else { "" }
 
 $btnReveal = New-Object System.Windows.Forms.Button
 $btnReveal.Text = "Show"
 $btnReveal.Size = New-Object System.Drawing.Size(66, 32)
-$btnReveal.Location = New-Object System.Drawing.Point(428, 208)
+$btnReveal.Location = New-Object System.Drawing.Point(628, 208)
 $btnReveal.FlatStyle = "Flat"
 $btnReveal.FlatAppearance.BorderSize = 0
 $btnReveal.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#273244")
 $btnReveal.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#f3f5f7")
 $btnReveal.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
-
 $btnReveal.Add_Click({
     $txtSmartKey.UseSystemPasswordChar = -not $txtSmartKey.UseSystemPasswordChar
-    $btnReveal.Text = if ($txtSmartKey.UseSystemPasswordChar)
-    {
-        "Show"
-    }
-    else
-    {
-        "Hide"
-    }
+    $btnReveal.Text = if ($txtSmartKey.UseSystemPasswordChar) { "Show" } else { "Hide" }
 })
 
 $hint = New-Object System.Windows.Forms.Label
@@ -586,16 +768,14 @@ $hint.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#6f7c8f")
 
 $btnToggle = New-Object System.Windows.Forms.Button
 $btnToggle.Text = "Connect"
-$btnToggle.Size = New-Object System.Drawing.Size(460, 42)
-$btnToggle.Location = New-Object System.Drawing.Point(28, 268)
+$btnToggle.Size = New-Object System.Drawing.Size(660, 42)
+$btnToggle.Location = New-Object System.Drawing.Point(28, 274)
 $btnToggle.FlatStyle = "Flat"
 $btnToggle.FlatAppearance.BorderSize = 0
 $btnToggle.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#ff6b57")
 $btnToggle.ForeColor = [System.Drawing.Color]::White
 $btnToggle.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 11)
-
 $btnToggle.Add_Click({
-
     if ($global:isConnected)
     {
         Stop-Tunnel
@@ -604,8 +784,32 @@ $btnToggle.Add_Click({
     {
         Start-Tunnel -smartKey $txtSmartKey.Text.Trim()
     }
-
 })
+
+$logLabel = New-Object System.Windows.Forms.Label
+$logLabel.Text = "Logs"
+$logLabel.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 10)
+$logLabel.AutoSize = $true
+$logLabel.Location = New-Object System.Drawing.Point(30, 332)
+$logLabel.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#d9dee7")
+
+$logBox = New-Object System.Windows.Forms.TextBox
+$logBox.Location = New-Object System.Drawing.Point(30, 358)
+$logBox.Size = New-Object System.Drawing.Size(658, 210)
+$logBox.Multiline = $true
+$logBox.ReadOnly = $true
+$logBox.ScrollBars = "Vertical"
+$logBox.BorderStyle = "FixedSingle"
+$logBox.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#0f141b")
+$logBox.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#c9d2de")
+$logBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+
+$logTimer = New-Object System.Windows.Forms.Timer
+$logTimer.Interval = 400
+$logTimer.Add_Tick({
+    Read-ProcessLogs
+})
+$logTimer.Start()
 
 $form.Controls.Add($title)
 $form.Controls.Add($subtitle)
@@ -615,8 +819,18 @@ $form.Controls.Add($txtSmartKey)
 $form.Controls.Add($btnReveal)
 $form.Controls.Add($hint)
 $form.Controls.Add($btnToggle)
+$form.Controls.Add($logLabel)
+$form.Controls.Add($logBox)
 
-$form.Add_FormClosing({ Stop-Tunnel })
+$form.Add_Shown({
+    Flush-PendingLogs
+    Add-Log "GUI ready" "app"
+})
+
+$form.Add_FormClosing({
+    $logTimer.Stop()
+    Stop-Tunnel
+})
+
 Update-UiState -State "Disconnected"
-
 $form.ShowDialog()

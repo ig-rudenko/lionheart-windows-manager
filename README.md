@@ -30,17 +30,14 @@ irm https://github.com/ig-rudenko/lionheart-windows-manager/raw/refs/heads/maste
 Установщик:
 
 - создаёт папку `%USERPROFILE%\lionheart`
-- скачивает `vpn-lionheart.ps1`
-- скачивает `vpn-lionheart.bat`
-- показывает в терминале путь установки и краткую инструкцию
-- создаёт ярлык `Lionheart VPN` на рабочем столе
-- запускает лаунчер с запросом UAC
+- скачивает файл запуска
+- создаёт ярлык на рабочем столе
 
 При первом запуске сам лаунчер уже докачает остальные зависимости.
 
 ## Как пользоваться
 
-1. Запустить `Lionheart VPN` с рабочего стола или файл `vpn-lionheart.bat` из `%USERPROFILE%\lionheart`
+1. Запустить `Lionheart VPN` с рабочего стола или файл `vpn-lionheart.vbs` из `%USERPROFILE%\lionheart`
 2. Вставить `smart-key` от сервера
 3. Нажать `Connect`
 
@@ -85,9 +82,3 @@ irm https://github.com/ig-rudenko/lionheart-windows-manager/raw/refs/heads/maste
 - `wintun.dll`
 
 Тогда скрипт ничего скачивать не будет.
-
-## Ограничения
-
-- без прав администратора Windows-сценарий работать не будет
-- автозагрузка зависимостей требует доступ в интернет
-- если upstream поменяет имена файлов или URL релизов, нужно обновить переменные в скрипте
