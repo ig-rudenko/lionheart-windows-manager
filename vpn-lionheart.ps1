@@ -11,12 +11,11 @@ $legacyLionheartPath = Join-Path $PSScriptRoot "lionheart-1.2-windows-x64.exe"
 $tun2socksPath = Join-Path $PSScriptRoot "tun2socks-windows-amd64.exe"
 $tun2socksZipPath = Join-Path $PSScriptRoot "tun2socks-windows-amd64.zip"
 $wintunPath = Join-Path $PSScriptRoot "wintun.dll"
-$wintunZipPath = Join-Path $PSScriptRoot "wintun.zip"
 $appConfigPath = Join-Path $PSScriptRoot "vpn-lionheart-config.json"
 $lionheartConfigPath = Join-Path $PSScriptRoot "config.json"
 $lionheartDownloadUrl = "https://github.com/jaykaiperson/lionheart/releases/download/v1.2/lionheart-1.2-windows-x64.exe"
 $tun2socksDownloadUrl = "https://github.com/xjasonlyu/tun2socks/releases/download/v2.6.0/tun2socks-windows-amd64.zip"
-$wintunDownloadUrl = "https://www.wintun.net/builds/wintun-0.14.1.zip"
+$wintunDownloadUrl = "https://github.com/ig-rudenko/lionheart-windows-manager/raw/refs/heads/master/extra/wintun.dll"
 
 $global:lionheart = $null
 $global:tun2socks = $null
@@ -210,26 +209,8 @@ function Ensure-WintunBinary
         return
     }
 
-    $extractDir = Join-Path $env:TEMP ("wintun-" + [guid]::NewGuid().ToString("N"))
-
-    try
-    {
-        Update-UiState -State "Connecting" -Detail "Downloading Wintun"
-        Download-File -Url $wintunDownloadUrl -DestinationPath $wintunZipPath
-        Expand-ArchiveFile -ZipPath $wintunZipPath -DestinationPath $extractDir
-        Copy-FirstMatch -SearchRoot $extractDir -Pattern "wintun.dll" -DestinationPath $wintunPath
-    }
-    finally
-    {
-        if (Test-Path $extractDir)
-        {
-            Remove-Item $extractDir -Recurse -Force
-        }
-        if (Test-Path $wintunZipPath)
-        {
-            Remove-Item $wintunZipPath -Force
-        }
-    }
+    Update-UiState -State "Connecting" -Detail "Downloading Wintun"
+    Download-File -Url $wintunDownloadUrl -DestinationPath $wintunPath
 }
 
 function Ensure-Dependencies

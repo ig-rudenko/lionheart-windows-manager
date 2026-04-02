@@ -17,12 +17,26 @@
 
 Запускать нужно от имени администратора, иначе настройка интерфейса и маршрутов Windows не сработает!
 
+Быстрая установка и запуск из PowerShell:
+
+```powershell
+irm https://github.com/ig-rudenko/lionheart-windows-manager/raw/refs/heads/master/install.ps1 | iex
+```
+
+Что делает эта команда:
+
+- создаёт папку `%USERPROFILE%\lionheart`
+- скачивает `vpn-lionheart.ps1`
+- скачивает `vpn-lionheart.bat`
+- запускает лаунчер с запросом UAC
+
+При первом запуске сам лаунчер уже докачает остальные зависимости.
+
 Сценарий использования:
 
 1. Запустить `vpn-lionheart.ps1` или `vpn-lionheart.bat`
 2. Вставить `smart-key` от сервера ([см. документацию](https://github.com/jaykaiperson/lionheart?tab=readme-ov-file#использование))
 3. Нажать `Connect`
-
 
 Лаунчер:
 
@@ -47,12 +61,12 @@
 
 - `lionheart`: `https://github.com/jaykaiperson/lionheart/releases/download/v1.2/lionheart-1.2-windows-x64.exe`
 - `tun2socks`: `https://github.com/xjasonlyu/tun2socks/releases/download/v2.6.0/tun2socks-windows-amd64.zip`
-- `wintun`: `https://www.wintun.net/builds/wintun-0.14.1.zip`
+- `wintun`: `https://github.com/ig-rudenko/lionheart-windows-manager/raw/refs/heads/master/extra/wintun.dll`
 
 Примечания:
 
 - для `tun2socks` скачивается ZIP-архив, из него извлекается `tun2socks-windows-amd64.exe`
-- для `wintun` скачивается официальный ZIP с `wintun.dll`
+- для `wintun` скачивается сразу готовый `wintun.dll`, без распаковки
 - для `lionheart` лаунчер использует каноническое имя `lionheart-windows-x64.exe`
 - если рядом уже лежит старый файл `lionheart-1.2-windows-x64.exe`, скрипт тоже сможет его использовать
 
