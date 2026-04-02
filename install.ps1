@@ -39,5 +39,3 @@ Write-Host "1. Start 'Lionheart VPN' from the desktop shortcut, or run vpn-lionh
 Write-Host "2. Approve the UAC prompt"
 Write-Host "3. Paste your smart-key and press Connect"
 Write-Host ""
-
-Start-Process -FilePath (Join-Path $installDir "vpn-lionheart.bat") -WorkingDirectory $installDir -Verb RunAs
