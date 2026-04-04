@@ -102,6 +102,118 @@ function Interface-Exists
     return (netsh interface show interface | Select-String $interface)
 }
 
+function Get-PortableExecutableInfo
+{
+    param([string]$Path)
+
+    if (-not (Test-Path $Path))
+    {
+        return @{
+            IsValid = $false
+            Reason = "file not found"
+            Architecture = $null
+        }
+    }
+
+    $fileStream = $null
+    $reader = $null
+
+    try
+    {
+        $fileStream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        $reader = New-Object System.IO.BinaryReader($fileStream)
+
+        if ($fileStream.Length -lt 64)
+        {
+            return @{
+                IsValid = $false
+                Reason = "file is too small to be a Windows executable"
+                Architecture = $null
+            }
+        }
+
+        if ($reader.ReadUInt16() -ne 0x5A4D)
+        {
+            return @{
+                IsValid = $false
+                Reason = "missing MZ header"
+                Architecture = $null
+            }
+        }
+
+        $fileStream.Seek(0x3C, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $peOffset = $reader.ReadInt32()
+
+        if (($peOffset -lt 0) -or ($peOffset -gt ($fileStream.Length - 6)))
+        {
+            return @{
+                IsValid = $false
+                Reason = "invalid PE header offset"
+                Architecture = $null
+            }
+        }
+
+        $fileStream.Seek($peOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
+        if ($reader.ReadUInt32() -ne 0x00004550)
+        {
+            return @{
+                IsValid = $false
+                Reason = "missing PE header"
+                Architecture = $null
+            }
+        }
+
+        $machine = $reader.ReadUInt16()
+        $architecture = switch ($machine)
+        {
+            0x8664 { "x64" }
+            0x014C { "x86" }
+            0xAA64 { "arm64" }
+            default { "unknown (0x{0:X4})" -f $machine }
+        }
+
+        return @{
+            IsValid = $true
+            Reason = $null
+            Architecture = $architecture
+        }
+    }
+    finally
+    {
+        if ($reader)
+        {
+            $reader.Dispose()
+        }
+        elseif ($fileStream)
+        {
+            $fileStream.Dispose()
+        }
+    }
+}
+
+function Get-LionheartBinaryValidationError
+{
+    param([string]$Path)
+
+    if (-not [Environment]::Is64BitOperatingSystem)
+    {
+        return "current Windows installation is 32-bit, but lionheart is distributed here only as x64"
+    }
+
+    $peInfo = Get-PortableExecutableInfo -Path $Path
+    if (-not $peInfo.IsValid)
+    {
+        return "file is not a valid Windows executable: $($peInfo.Reason)"
+    }
+
+    if ($peInfo.Architecture -ne "x64")
+    {
+        return "unexpected executable architecture: $($peInfo.Architecture)"
+    }
+
+    return $null
+}
+
 function Get-LionheartBinaryPath
 {
     return $lionheartPath
@@ -403,9 +515,17 @@ function Copy-FirstMatch
 
 function Ensure-LionheartBinary
 {
-    if (Test-Path (Get-LionheartBinaryPath))
+    $binaryPath = Get-LionheartBinaryPath
+    if (Test-Path $binaryPath)
     {
-        return
+        $validationError = Get-LionheartBinaryValidationError -Path $binaryPath
+        if (-not $validationError)
+        {
+            return
+        }
+
+        Add-Log "Existing lionheart binary is invalid, re-downloading: $validationError" "download"
+        Remove-Item -Path $binaryPath -Force -ErrorAction Stop
     }
 
     Update-UiState -State "Connecting" -Detail "Downloading Lionheart"
@@ -428,6 +548,13 @@ function Ensure-LionheartBinary
     }
 
     Download-File -Url $lionheartDownloadUrl -DestinationPath $lionheartPath
+
+    $validationError = Get-LionheartBinaryValidationError -Path $lionheartPath
+    if ($validationError)
+    {
+        Remove-Item -Path $lionheartPath -Force -ErrorAction SilentlyContinue
+        throw "Downloaded lionheart binary is invalid: $validationError"
+    }
     Save-LionheartVersionInfo -Version $defaultLionheartVersion -AssetName $defaultLionheartAssetName -Tag ("v" + $defaultLionheartVersion)
     Refresh-LionheartVersionUi
 }
