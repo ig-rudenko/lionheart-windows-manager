@@ -7,13 +7,16 @@ if (-not $PSScriptRoot)
 }
 
 $lionheartPath = Join-Path $PSScriptRoot "lionheart-windows-x64.exe"
-$legacyLionheartPath = Join-Path $PSScriptRoot "lionheart-1.2-windows-x64.exe"
 $tun2socksPath = Join-Path $PSScriptRoot "tun2socks-windows-amd64.exe"
 $tun2socksZipPath = Join-Path $PSScriptRoot "tun2socks-windows-amd64.zip"
 $wintunPath = Join-Path $PSScriptRoot "wintun.dll"
 $appConfigPath = Join-Path $PSScriptRoot "vpn-lionheart-config.json"
 $lionheartConfigPath = Join-Path $PSScriptRoot "config.json"
-$lionheartDownloadUrl = "https://github.com/jaykaiperson/lionheart/releases/download/v1.2/lionheart-1.2-windows-x64.exe"
+$lionheartVersionInfoPath = Join-Path $PSScriptRoot "lionheart-version.json"
+$lionheartRepoApiLatestUrl = "https://api.github.com/repos/jaykaiperson/lionheart/releases/latest"
+$defaultLionheartVersion = "1.3"
+$defaultLionheartAssetName = "lionheart-1.3-windows-x64.exe"
+$lionheartDownloadUrl = "https://github.com/jaykaiperson/lionheart/releases/download/v1.3/$defaultLionheartAssetName"
 $tun2socksDownloadUrl = "https://github.com/xjasonlyu/tun2socks/releases/download/v2.6.0/tun2socks-windows-amd64.zip"
 $wintunDownloadUrl = "https://github.com/ig-rudenko/lionheart-windows-manager/raw/refs/heads/master/extra/wintun.dll"
 
@@ -23,6 +26,7 @@ $global:turnBypassIP = $null
 $global:isConnected = $false
 $global:pendingLogs = New-Object System.Collections.Generic.List[string]
 $global:processLogState = @{}
+$global:lionheartLatestRelease = $null
 $tunInterface = "wb-tun0"
 $tunIP = "10.254.254.1"
 $proxyPort = "1080"
@@ -100,17 +104,200 @@ function Interface-Exists
 
 function Get-LionheartBinaryPath
 {
-    if (Test-Path $lionheartPath)
-    {
-        return $lionheartPath
-    }
-
-    if (Test-Path $legacyLionheartPath)
-    {
-        return $legacyLionheartPath
-    }
-
     return $lionheartPath
+}
+
+function Get-LionheartHeaders
+{
+    return @{
+        "Accept" = "application/vnd.github+json"
+        "User-Agent" = "LionheartVPN"
+    }
+}
+
+function Get-VersionFromLionheartAssetName
+{
+    param([string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name))
+    {
+        return $null
+    }
+
+    $match = [regex]::Match($Name, "lionheart-(?<version>[0-9]+(?:\.[0-9]+)*)-windows-x64\.exe")
+    if ($match.Success)
+    {
+        return $match.Groups["version"].Value
+    }
+
+    return $null
+}
+
+function Get-VersionSortValue
+{
+    param([string]$Version)
+
+    try
+    {
+        return [version]$Version
+    }
+    catch
+    {
+        return [version]"0.0"
+    }
+}
+
+function Save-LionheartVersionInfo
+{
+    param(
+        [string]$Version,
+        [string]$AssetName = "",
+        [string]$Tag = ""
+    )
+
+    @{
+        version = $Version
+        asset_name = $AssetName
+        tag = $Tag
+        updated_at = (Get-Date).ToString("o")
+    } | ConvertTo-Json | Set-Content $lionheartVersionInfoPath
+}
+
+function Load-LionheartVersionInfo
+{
+    if (-not (Test-Path $lionheartVersionInfoPath))
+    {
+        return $null
+    }
+
+    try
+    {
+        return Get-Content $lionheartVersionInfoPath -Raw | ConvertFrom-Json
+    }
+    catch
+    {
+        return $null
+    }
+}
+
+function Get-InstalledLionheartInfo
+{
+    $binaryPath = Get-LionheartBinaryPath
+    $versionInfo = Load-LionheartVersionInfo
+    $version = $null
+    $assetName = $null
+
+    if ($versionInfo)
+    {
+        $version = $versionInfo.version
+        $assetName = $versionInfo.asset_name
+    }
+
+    if (-not $version -and (Test-Path $lionheartPath))
+    {
+        $version = Get-VersionFromLionheartAssetName -Name $defaultLionheartAssetName
+        $assetName = $defaultLionheartAssetName
+    }
+
+    return [PSCustomObject]@{
+        Path = $binaryPath
+        Exists = (Test-Path $binaryPath)
+        Version = $version
+        AssetName = $assetName
+    }
+}
+
+function Get-LionheartLatestReleaseInfo
+{
+    Add-Log "Checking latest Lionheart release" "update"
+    $release = Invoke-RestMethod -Uri $lionheartRepoApiLatestUrl -Headers (Get-LionheartHeaders)
+    $asset = $release.assets | Where-Object { $_.name -match "^lionheart-[0-9]+(?:\.[0-9]+)*-windows-x64\.exe$" } | Select-Object -First 1
+    if (-not $asset)
+    {
+        throw "Windows x64 asset not found in the latest Lionheart release"
+    }
+
+    $version = Get-VersionFromLionheartAssetName -Name $asset.name
+    if (-not $version)
+    {
+        $version = ($release.tag_name -replace '^[vV]', '')
+    }
+
+    return [PSCustomObject]@{
+        Version = $version
+        AssetName = $asset.name
+        Url = $asset.browser_download_url
+        Tag = $release.tag_name
+    }
+}
+
+function Update-LionheartVersionUi
+{
+    param(
+        [string]$CurrentVersion,
+        [string]$LatestVersion
+    )
+
+    Invoke-UiAction {
+        $lblCurrentVersionValue.Text = if ($CurrentVersion) { $CurrentVersion } else { "not installed" }
+        $lblLatestVersionValue.Text = if ($LatestVersion) { $LatestVersion } else { "unknown" }
+
+        $canUpdate = $false
+        if ($CurrentVersion -and $LatestVersion)
+        {
+            $canUpdate = (Get-VersionSortValue -Version $LatestVersion) -gt (Get-VersionSortValue -Version $CurrentVersion)
+        }
+        elseif ($LatestVersion)
+        {
+            $canUpdate = $true
+        }
+
+        $btnUpdateLionheart.Enabled = $canUpdate -and (-not $global:isConnected)
+    }
+}
+
+function Refresh-LionheartVersionUi
+{
+    $installed = Get-InstalledLionheartInfo
+    $latestVersion = $null
+    if ($global:lionheartLatestRelease)
+    {
+        $latestVersion = $global:lionheartLatestRelease.Version
+    }
+
+    Update-LionheartVersionUi -CurrentVersion $installed.Version -LatestVersion $latestVersion
+}
+
+function Install-LionheartRelease
+{
+    param([pscustomobject]$ReleaseInfo)
+
+    if (-not $ReleaseInfo)
+    {
+        throw "Lionheart release info is missing"
+    }
+
+    if ($global:lionheart -or $global:tun2socks -or $global:isConnected)
+    {
+        throw "Stop the tunnel before updating Lionheart"
+    }
+
+    $tempPath = Join-Path $PSScriptRoot ($ReleaseInfo.AssetName + ".download")
+    try
+    {
+        Download-File -Url $ReleaseInfo.Url -DestinationPath $tempPath
+        Move-Item -Path $tempPath -Destination $lionheartPath -Force
+
+        Save-LionheartVersionInfo -Version $ReleaseInfo.Version -AssetName $ReleaseInfo.AssetName -Tag $ReleaseInfo.Tag
+        Add-Log "Lionheart updated to $($ReleaseInfo.Version)" "update"
+    }
+    finally
+    {
+        if (Test-Path $tempPath)
+        {
+            Remove-Item $tempPath -Force
+        }
+    }
 }
 
 function Update-UiState
@@ -131,6 +318,7 @@ function Update-UiState
                 $btnToggle.Text = "Connect"
                 $btnToggle.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#ff6b57")
                 $btnToggle.Enabled = $true
+                Refresh-LionheartVersionUi
             }
             "Connecting" {
                 $status.Text = "Connecting"
@@ -139,6 +327,7 @@ function Update-UiState
                 $btnToggle.Text = "Connecting..."
                 $btnToggle.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#f4b942")
                 $btnToggle.Enabled = $false
+                $btnUpdateLionheart.Enabled = $false
             }
             "Connected" {
                 $global:isConnected = $true
@@ -148,6 +337,7 @@ function Update-UiState
                 $btnToggle.Text = "Disconnect"
                 $btnToggle.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#1f8f55")
                 $btnToggle.Enabled = $true
+                $btnUpdateLionheart.Enabled = $false
             }
         }
     }
@@ -219,7 +409,27 @@ function Ensure-LionheartBinary
     }
 
     Update-UiState -State "Connecting" -Detail "Downloading Lionheart"
+    $releaseInfo = $null
+    try
+    {
+        $releaseInfo = Get-LionheartLatestReleaseInfo
+    }
+    catch
+    {
+        Add-Log "Failed to fetch latest release, using built-in Lionheart URL" "update"
+    }
+
+    if ($releaseInfo)
+    {
+        Install-LionheartRelease -ReleaseInfo $releaseInfo
+        $global:lionheartLatestRelease = $releaseInfo
+        Refresh-LionheartVersionUi
+        return
+    }
+
     Download-File -Url $lionheartDownloadUrl -DestinationPath $lionheartPath
+    Save-LionheartVersionInfo -Version $defaultLionheartVersion -AssetName $defaultLionheartAssetName -Tag ("v" + $defaultLionheartVersion)
+    Refresh-LionheartVersionUi
 }
 
 function Ensure-Tun2socksBinary
@@ -766,10 +976,126 @@ $hint.AutoSize = $true
 $hint.Location = New-Object System.Drawing.Point(31, 246)
 $hint.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#6f7c8f")
 
+$versionPanel = New-Object System.Windows.Forms.Panel
+$versionPanel.Location = New-Object System.Drawing.Point(28, 274)
+$versionPanel.Size = New-Object System.Drawing.Size(660, 84)
+$versionPanel.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#171f2b")
+
+$lblCurrentVersion = New-Object System.Windows.Forms.Label
+$lblCurrentVersion.Text = "Current version"
+$lblCurrentVersion.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
+$lblCurrentVersion.AutoSize = $true
+$lblCurrentVersion.Location = New-Object System.Drawing.Point(18, 16)
+$lblCurrentVersion.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#d9dee7")
+
+$lblCurrentVersionValue = New-Object System.Windows.Forms.Label
+$lblCurrentVersionValue.Text = "not installed"
+$lblCurrentVersionValue.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$lblCurrentVersionValue.AutoSize = $true
+$lblCurrentVersionValue.Location = New-Object System.Drawing.Point(18, 39)
+$lblCurrentVersionValue.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#8b97a8")
+
+$lblLatestVersion = New-Object System.Windows.Forms.Label
+$lblLatestVersion.Text = "Latest version"
+$lblLatestVersion.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
+$lblLatestVersion.AutoSize = $true
+$lblLatestVersion.Location = New-Object System.Drawing.Point(220, 16)
+$lblLatestVersion.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#d9dee7")
+
+$lblLatestVersionValue = New-Object System.Windows.Forms.Label
+$lblLatestVersionValue.Text = "unknown"
+$lblLatestVersionValue.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$lblLatestVersionValue.AutoSize = $true
+$lblLatestVersionValue.Location = New-Object System.Drawing.Point(220, 39)
+$lblLatestVersionValue.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#8b97a8")
+
+$btnCheckVersion = New-Object System.Windows.Forms.Button
+$btnCheckVersion.Text = "Check latest"
+$btnCheckVersion.Size = New-Object System.Drawing.Size(120, 34)
+$btnCheckVersion.Location = New-Object System.Drawing.Point(392, 25)
+$btnCheckVersion.FlatStyle = "Flat"
+$btnCheckVersion.FlatAppearance.BorderSize = 0
+$btnCheckVersion.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#273244")
+$btnCheckVersion.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#f3f5f7")
+$btnCheckVersion.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
+$btnCheckVersion.Add_Click({
+    $previousText = $btnCheckVersion.Text
+    $btnCheckVersion.Enabled = $false
+    $btnCheckVersion.Text = "Checking..."
+    try
+    {
+        $global:lionheartLatestRelease = Get-LionheartLatestReleaseInfo
+        Refresh-LionheartVersionUi
+        Add-Log "Latest Lionheart version: $($global:lionheartLatestRelease.Version)" "update"
+    }
+    catch
+    {
+        Add-Log "Version check failed: $($_.Exception.Message)" "update"
+        [System.Windows.Forms.MessageBox]::Show("Version check failed: $($_.Exception.Message)")
+    }
+    finally
+    {
+        $btnCheckVersion.Text = $previousText
+        $btnCheckVersion.Enabled = $true
+    }
+})
+
+$btnUpdateLionheart = New-Object System.Windows.Forms.Button
+$btnUpdateLionheart.Text = "Update"
+$btnUpdateLionheart.Size = New-Object System.Drawing.Size(120, 34)
+$btnUpdateLionheart.Location = New-Object System.Drawing.Point(522, 25)
+$btnUpdateLionheart.FlatStyle = "Flat"
+$btnUpdateLionheart.FlatAppearance.BorderSize = 0
+$btnUpdateLionheart.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#1f8f55")
+$btnUpdateLionheart.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#f3f5f7")
+$btnUpdateLionheart.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
+$btnUpdateLionheart.Enabled = $false
+$btnUpdateLionheart.Add_Click({
+    if ($global:isConnected -or $global:lionheart -or $global:tun2socks)
+    {
+        [System.Windows.Forms.MessageBox]::Show("Stop the tunnel before updating Lionheart")
+        return
+    }
+
+    $btnUpdateLionheart.Enabled = $false
+    $btnCheckVersion.Enabled = $false
+    $previousText = $btnUpdateLionheart.Text
+    $btnUpdateLionheart.Text = "Updating..."
+    try
+    {
+        if (-not $global:lionheartLatestRelease)
+        {
+            $global:lionheartLatestRelease = Get-LionheartLatestReleaseInfo
+        }
+
+        Install-LionheartRelease -ReleaseInfo $global:lionheartLatestRelease
+        Refresh-LionheartVersionUi
+        [System.Windows.Forms.MessageBox]::Show("Lionheart updated to version $($global:lionheartLatestRelease.Version)")
+    }
+    catch
+    {
+        Add-Log "Update failed: $($_.Exception.Message)" "update"
+        [System.Windows.Forms.MessageBox]::Show("Update failed: $($_.Exception.Message)")
+    }
+    finally
+    {
+        $btnUpdateLionheart.Text = $previousText
+        $btnCheckVersion.Enabled = $true
+        Refresh-LionheartVersionUi
+    }
+})
+
+$versionPanel.Controls.Add($lblCurrentVersion)
+$versionPanel.Controls.Add($lblCurrentVersionValue)
+$versionPanel.Controls.Add($lblLatestVersion)
+$versionPanel.Controls.Add($lblLatestVersionValue)
+$versionPanel.Controls.Add($btnCheckVersion)
+$versionPanel.Controls.Add($btnUpdateLionheart)
+
 $btnToggle = New-Object System.Windows.Forms.Button
 $btnToggle.Text = "Connect"
 $btnToggle.Size = New-Object System.Drawing.Size(660, 42)
-$btnToggle.Location = New-Object System.Drawing.Point(28, 274)
+$btnToggle.Location = New-Object System.Drawing.Point(28, 370)
 $btnToggle.FlatStyle = "Flat"
 $btnToggle.FlatAppearance.BorderSize = 0
 $btnToggle.BackColor = [System.Drawing.ColorTranslator]::FromHtml("#ff6b57")
@@ -790,12 +1116,12 @@ $logLabel = New-Object System.Windows.Forms.Label
 $logLabel.Text = "Logs"
 $logLabel.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 10)
 $logLabel.AutoSize = $true
-$logLabel.Location = New-Object System.Drawing.Point(30, 332)
+$logLabel.Location = New-Object System.Drawing.Point(30, 428)
 $logLabel.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#d9dee7")
 
 $logBox = New-Object System.Windows.Forms.TextBox
-$logBox.Location = New-Object System.Drawing.Point(30, 358)
-$logBox.Size = New-Object System.Drawing.Size(658, 210)
+$logBox.Location = New-Object System.Drawing.Point(30, 454)
+$logBox.Size = New-Object System.Drawing.Size(658, 114)
 $logBox.Multiline = $true
 $logBox.ReadOnly = $true
 $logBox.ScrollBars = "Vertical"
@@ -818,6 +1144,7 @@ $form.Controls.Add($lblSmartKey)
 $form.Controls.Add($txtSmartKey)
 $form.Controls.Add($btnReveal)
 $form.Controls.Add($hint)
+$form.Controls.Add($versionPanel)
 $form.Controls.Add($btnToggle)
 $form.Controls.Add($logLabel)
 $form.Controls.Add($logBox)
@@ -825,6 +1152,7 @@ $form.Controls.Add($logBox)
 $form.Add_Shown({
     Flush-PendingLogs
     Add-Log "GUI ready" "app"
+    Refresh-LionheartVersionUi
 })
 
 $form.Add_FormClosing({
